@@ -1,82 +1,117 @@
 package main
-
 import (
-	"context"
-	"database/sql"
-	"flag"
-	"log"
-	"os"
-	"os/signal"
-	"time"
+  "github.com/gorilla/mux"
+  "database/sql"
+  _"github.com/go-sql-driver/mysql"
+  "net/http"
+  "encoding/json"
+  "fmt"
+  "io/ioutil"
 )
-
-var pool *sql.DB // Database connection pool.
-
+type Post struct {
+  ID string `json:"id"`
+  Title string `json:"title"`
+}
+var db *sql.DB
+var err error
 func main() {
-	id := flag.Int64("id", 0, "person ID to find")
-	dsn := flag.String("dsn", os.Getenv("DSN"), "connection data source name")
-	flag.Parse()
-
-	if len(*dsn) == 0 {
-		log.Fatal("missing dsn flag")
-	}
-	if *id == 0 {
-		log.Fatal("missing person ID")
-	}
-	var err error
-
-	// Opening a driver typically will not attempt to connect to the database.
-	pool, err = sql.Open("driver-name", *dsn)
-	if err != nil {
-		// This will not be a connection error, but a DSN parse error or
-		// another initialization error.
-		log.Fatal("unable to use data source name", err)
-	}
-	defer pool.Close()
-
-	pool.SetConnMaxLifetime(0)
-	pool.SetMaxIdleConns(3)
-	pool.SetMaxOpenConns(3)
-
-	ctx, stop := context.WithCancel(context.Background())
-	defer stop()
-
-	appSignal := make(chan os.Signal, 3)
-	signal.Notify(appSignal, os.Interrupt)
-
-	go func() {
-		select {
-		case <-appSignal:
-			stop()
-		}
-	}()
-
-	Ping(ctx)
-
-	Query(ctx, *id)
+db, err = sql.Open("mysql", "root:143114@tcp(127.0.0.1:3306)/test")
+  if err != nil {
+    panic(err.Error())
+  }
+  defer db.Close()
+  router := mux.NewRouter()
+  router.HandleFunc("/posts", getPosts).Methods("GET")
+//   router.HandleFunc("/posts", createPost).Methods("POST")
+//   router.HandleFunc("/posts/{id}", getPost).Methods("GET")
+//   router.HandleFunc("/posts/{id}", updatePost).Methods("PUT")
+//   router.HandleFunc("/posts/{id}", deletePost).Methods("DELETE")
+  http.ListenAndServe(":8080", router)
 }
-
-// Ping the database to verify DSN provided by the user is valid and the
-// server accessible. If the ping fails exit the program with an error.
-func Ping(ctx context.Context) {
-	ctx, cancel := context.WithTimeout(ctx, 1*time.Second)
-	defer cancel()
-
-	if err := pool.PingContext(ctx); err != nil {
-		log.Fatalf("unable to connect to database: %v", err)
-	}
+func getPosts(w http.ResponseWriter, r *http.Request) {
+  w.Header().Set("Content-Type", "application/json")
+  var posts []Post
+  result, err := db.Query("SELECT id, title from posts")
+  if err != nil {
+    panic(err.Error())
+  }
+  defer result.Close()
+  for result.Next() {
+    var post Post
+    err := result.Scan(&post.ID, &post.Title)
+    if err != nil {
+      panic(err.Error())
+    }
+    posts = append(posts, post)
+  }
+  json.NewEncoder(w).Encode(posts)
 }
-
-// Query the database for the information requested and prints the results.
-// If the query fails exit the program with an error.
-func Query(ctx context.Context, id int64) {
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-
-	var name string
-	err := pool.QueryRowContext(ctx, "select p.name from people as p where p.id = :id;", sql.Named("id", id)).Scan(&name)
-	if err != nil {
-		log.Fatal("unable to execute search query", err)
-	}
-	log.Println("name=", name)
+// func createPost(w http.ResponseWriter, r *http.Request) {
+  w.Header().Set("Content-Type", "application/json")
+  stmt, err := db.Prepare("INSERT INTO posts(title) VALUES(?)")
+  if err != nil {
+    panic(err.Error())
+  }
+  body, err := ioutil.ReadAll(r.Body)
+  if err != nil {
+    panic(err.Error())
+  }
+  keyVal := make(map[string]string)
+  json.Unmarshal(body, &keyVal)
+  title := keyVal["title"]
+  _, err = stmt.Exec(title)
+  if err != nil {
+    panic(err.Error())
+  }
+  fmt.Fprintf(w, "New post was created")
+}
+// func getPost(w http.ResponseWriter, r *http.Request) {
+  w.Header().Set("Content-Type", "application/json")
+  params := mux.Vars(r)
+  result, err := db.Query("SELECT id, title FROM posts WHERE id = ?", params["id"])
+  if err != nil {
+    panic(err.Error())
+  }
+  defer result.Close()
+  var post Post
+  for result.Next() {
+    err := result.Scan(&post.ID, &post.Title)
+    if err != nil {
+      panic(err.Error())
+    }
+  }
+  json.NewEncoder(w).Encode(post)
+}
+// func updatePost(w http.ResponseWriter, r *http.Request) {
+  w.Header().Set("Content-Type", "application/json")
+  params := mux.Vars(r)
+  stmt, err := db.Prepare("UPDATE posts SET title = ? WHERE id = ?")
+  if err != nil {
+    panic(err.Error())
+  }
+  body, err := ioutil.ReadAll(r.Body)
+  if err != nil {
+    panic(err.Error())
+  }
+  keyVal := make(map[string]string)
+  json.Unmarshal(body, &keyVal)
+  newTitle := keyVal["title"]
+  _, err = stmt.Exec(newTitle, params["id"])
+  if err != nil {
+    panic(err.Error())
+  }
+  fmt.Fprintf(w, "Post with ID = %s was updated", params["id"])
+}
+// func deletePost(w http.ResponseWriter, r *http.Request) {
+  w.Header().Set("Content-Type", "application/json")
+  params := mux.Vars(r)
+  stmt, err := db.Prepare("DELETE FROM posts WHERE id = ?")
+  if err != nil {
+    panic(err.Error())
+  }
+  _, err = stmt.Exec(params["id"])
+  if err != nil {
+    panic(err.Error())
+  }
+  fmt.Fprintf(w, "Post with ID = %s was deleted", params["id"])
 }
